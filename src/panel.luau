@@ -1,11 +1,13 @@
 --!nonstrict
 -- Pomodoro Heatmap - panel: timer, insights (heatmap, trends, rhythms) and quick settings.
 
+local Icon = require("./src/icon.luau")
+
 local tab = "timer" -- "timer" | "insights" | "settings"
 local isOpen = false
 
 local PHASE = {
-    work = { name = "Focus", glyph = "brain", color = "primary", start = "Start focus" },
+    work = { name = "Focus", glyph = "tomato", color = "primary", start = "Start focus" },
     short = { name = "Short break", glyph = "coffee", color = "tertiary", start = "Start break" },
     long = { name = "Long break", glyph = "armchair", color = "tertiary", start = "Start break" },
 }
@@ -99,7 +101,7 @@ end
 
 local function sectionTitle(glyph, title, sub)
     local row = {
-        ui.glyph({ name = glyph, size = 15, color = "primary" }),
+        Icon.glyph({ name = glyph, size = 15, color = "primary" }),
         ui.label({ text = title, fontSize = 13, fontWeight = "bold", color = "on_surface", flexGrow = 1 }),
     }
     if sub then table.insert(row, muted(sub)) end
@@ -129,7 +131,7 @@ end
 local function header(t)
     local p = PHASE[t and t.phase or "work"] or PHASE.work
     return ui.row({ gap = 6, align = "center" }, {
-        ui.glyph({ name = p.glyph, size = 18, color = p.color }),
+        Icon.glyph({ name = p.glyph, size = 18, color = p.color }),
         ui.label({ text = "Pomodoro", fontSize = 16, fontWeight = "bold", color = "on_surface", flexGrow = 1 }),
         tabButton("timer", "Timer", "hourglass"),
         tabButton("insights", "Insights", "chart-bar"),
@@ -330,7 +332,7 @@ local function controls(t)
     else
         row2 = {
             action("Skip break", "player-track-next", "skip"),
-            action("Focus now", "brain", "focus"),
+            action("Focus now", "player-play", "focus"),
             action("Stop", "player-stop", "stop"),
         }
     end
@@ -374,7 +376,7 @@ local function todayCard(s)
             fill = s.today.min >= goal and "tertiary" or "primary", track = "on_surface/0.1" }))
     end
     table.insert(children, ui.row({ gap = 16 }, {
-        ui.row({ gap = 4, align = "center" }, { ui.glyph({ name = "brain", size = 13, color = "on_surface_variant" }),
+        ui.row({ gap = 4, align = "center" }, { Icon.glyph({ name = "tomato", size = 13, color = "on_surface_variant" }),
             muted(plural(s.today.count, "session"), 12) }),
         ui.row({ gap = 4, align = "center" }, { ui.glyph({ name = "flame", size = 13,
             color = s.streak > 0 and "tertiary" or "on_surface_variant" }), muted(plural(s.streak, "day") .. " streak", 12) }),
@@ -532,7 +534,7 @@ end
 local function kpi(glyph, label, value, sub, subColor)
     return card({ flexGrow = 1, gap = 4, padding = 12 }, {
         ui.row({ gap = 6, align = "center" }, {
-            ui.glyph({ name = glyph, size = 13, color = "on_surface_variant" }),
+            Icon.glyph({ name = glyph, size = 13, color = "on_surface_variant" }),
             muted(label),
         }),
         ui.label({ text = value, fontSize = 20, fontWeight = "bold", color = "on_surface" }),
@@ -701,7 +703,7 @@ local function facts(s)
     local items = {}
     local function fact(glyph, text)
         table.insert(items, ui.row({ gap = 8, align = "center" }, {
-            ui.glyph({ name = glyph, size = 13, color = "primary" }),
+            Icon.glyph({ name = glyph, size = 13, color = "primary" }),
             ui.label({ text = text, fontSize = 12, color = "on_surface", flexGrow = 1 }),
         }))
     end
@@ -712,7 +714,7 @@ local function facts(s)
             plural(s.total.partial, "session")))
     end
     if #items == 0 then
-        fact("brain", "Finish your first focus session to start building insights.")
+        fact("tomato", "Finish your first focus session to start building insights.")
     end
     return card({ gap = 8 }, items)
 end
@@ -739,7 +741,7 @@ function render()
     local body
     if not t then
         body = ui.column({ flexGrow = 1, align = "center", justify = "center", gap = 8 }, {
-            ui.glyph({ name = "brain", size = 28, color = "primary" }),
+            Icon.glyph({ name = "tomato", size = 28, color = "primary" }),
             muted("Starting the Pomodoro engine…", 13),
         })
     elseif tab == "insights" then

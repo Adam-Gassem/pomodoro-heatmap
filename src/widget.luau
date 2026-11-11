@@ -6,10 +6,11 @@
 -- Click: panel · Right click: start/pause · Middle click: skip · Scroll: ±1 min
 
 local PANEL_ID = "adam-gassem/pomodoro-heatmap:panel"
+local Icon = require("./src/icon.luau")
 local isVertical = barWidget.isVertical()
 
 local PHASE = {
-    work = { glyph = "brain", color = "primary", name = "Focus" },
+    work = { glyph = "tomato", color = "primary", name = "Focus" },
     short = { glyph = "coffee", color = "tertiary", name = "Short break" },
     long = { glyph = "armchair", color = "tertiary", name = "Long break" },
 }
@@ -31,14 +32,14 @@ end
 
 local function render(t)
     if type(t) ~= "table" then
-        barWidget.render(ui.glyph({ name = "brain", color = "on_surface" }))
+        barWidget.render(Icon.glyph({ name = "tomato", color = "on_surface" }))
         return
     end
     local p = PHASE[t.phase] or PHASE.work
     local active = t.status ~= "idle"
     local color = t.status == "running" and p.color or (active and "on_surface_variant" or "on_surface")
-    local glyph = t.status == "paused" and "player-pause" or (active and p.glyph or "brain")
-    local children = { ui.glyph({ name = glyph, color = color, size = 16 }) }
+    local glyph = t.status == "paused" and "player-pause" or (active and p.glyph or "tomato")
+    local children = { Icon.glyph({ name = glyph, color = color, size = 16 }) }
 
     if active then
         local timeText = clock(t.remaining)
@@ -119,4 +120,15 @@ function onScroll(axis, steps, startsGesture)
 end
 
 noctalia.state.watch("pomo.timer", render)
+
+-- The tomato is an image, not a font glyph, so redraw it when the theme colours change.
+local palette = ""
+noctalia.setUpdateInterval(2000)
+function update()
+    local ok, now = pcall(function() return noctalia.getColor("primary") .. noctalia.getColor("on_surface") end)
+    if ok and now ~= palette then
+        palette = now
+        render(noctalia.state.get("pomo.timer"))
+    end
+end
 render(noctalia.state.get("pomo.timer"))

@@ -40,6 +40,52 @@ function M.dayLabel(sec, withYear)
     return s
 end
 
+-- Calendar days as integers (days since 1970-01-01), so walking the calendar is
+-- plain arithmetic instead of thousands of os.date/os.time calls.
+local floor = math.floor
+
+local function daysFromCivil(y, m, d)
+    if m <= 2 then y -= 1 end
+    local era = floor(y / 400)
+    local yoe = y - era * 400
+    local doy = floor((153 * (m + (m > 2 and -3 or 9)) + 2) / 5) + d - 1
+    local doe = yoe * 365 + floor(yoe / 4) - floor(yoe / 100) + doy
+    return era * 146097 + doe - 719468
+end
+
+local function civilFromDays(z)
+    z += 719468
+    local era = floor(z / 146097)
+    local doe = z - era * 146097
+    local yoe = floor((doe - floor(doe / 1460) + floor(doe / 36524) - floor(doe / 146096)) / 365)
+    local doy = doe - (365 * yoe + floor(yoe / 4) - floor(yoe / 100))
+    local mp = floor((5 * doy + 2) / 153)
+    local d = doy - floor((153 * mp + 2) / 5) + 1
+    local m = mp < 10 and mp + 3 or mp - 9
+    return yoe + era * 400 + (m <= 2 and 1 or 0), m, d
+end
+
+local function dayOf(sec)
+    local t = os.date("*t", sec)
+    return daysFromCivil(t.year, t.month, t.day), t
+end
+
+local function keyOf(n)
+    local y, m, d = civilFromDays(n)
+    return string.format("%04d-%02d-%02d", y, m, d)
+end
+
+local function weekdayOf(n) -- Monday = 1 ... Sunday = 7 (day 0 was a Thursday)
+    return (n + 3) % 7 + 1
+end
+
+local function labelOf(n, withYear)
+    local y, m, d = civilFromDays(n)
+    local s = string.format("%s %d %s", DAYS[weekdayOf(n)], d, MONTHS[m])
+    if withYear then s ..= " " .. y end
+    return s
+end
+
 local function levelFor(minutes, goal, peak)
     if minutes <= 0 then return 0 end
     local ref = goal > 0 and goal or peak
@@ -51,9 +97,12 @@ local function levelFor(minutes, goal, peak)
     return 1
 end
 
+-- Session records never change once logged, so their calendar lookups are cached.
+local memo = setmetatable({}, { __mode = "k" })
+
 function M.compute(sessions, nowSec, goalMin)
     goalMin = goalMin or 0
-    local byDay = {}
+    local byDay = {} -- day number -> { sec, count }
     local hours = table.create(24, 0)
     local weekdays = table.create(7, 0)
     local totalSec, totalCount, partialCount = 0, 0, 0
@@ -61,11 +110,17 @@ function M.compute(sessions, nowSec, goalMin)
     for _, r in ipairs(sessions) do
         local d = tonumber(r.d) or 0
         if d > 0 and r.s then
-            local key = M.dayKey(r.s)
-            local day = byDay[key]
+            local info = memo[r]
+            if not info or info.s ~= r.s then
+                local n, t = dayOf(r.s)
+                info = { s = r.s, n = n, hour = t.hour, into = t.min * 60 + t.sec }
+                memo[r] = info
+            end
+            local n = info.n
+            local day = byDay[n]
             if not day then
                 day = { sec = 0, count = 0 }
-                byDay[key] = day
+                byDay[n] = day
             end
             day.sec += d
             totalSec += d
@@ -76,71 +131,61 @@ function M.compute(sessions, nowSec, goalMin)
                 partialCount += 1
             end
             -- Spread the minutes over the clock hours they actually covered.
-            local cursor, remaining = r.s, d
+            local hour, intoHour, remaining = info.hour, info.into, d
             while remaining > 0 do
-                local hour = tonumber(os.date("%H", cursor)) or 0
-                local intoHour = (tonumber(os.date("%M", cursor)) or 0) * 60 + (tonumber(os.date("%S", cursor)) or 0)
                 local chunk = math.min(remaining, 3600 - intoHour)
                 hours[hour + 1] += chunk / 60
-                cursor += chunk
                 remaining -= chunk
+                hour, intoHour = (hour + 1) % 24, 0
             end
-            local wd = M.weekdayMon(r.s)
-            weekdays[wd] += d / 60
+            weekdays[weekdayOf(n)] += d / 60
         end
     end
 
-    local function minutesOn(sec)
-        local day = byDay[M.dayKey(sec)]
+    local function minutesOn(n)
+        local day = byDay[n]
         return day and day.sec / 60 or 0, day and day.count or 0
     end
 
-    local todayMin, todayCount = minutesOn(nowSec)
+    local today = dayOf(nowSec)
+    local todayMin, todayCount = minutesOn(today)
 
     -- Rolling 7-day windows.
     local weekMin, prevWeekMin, weekCount = 0, 0, 0
     for i = 0, 6 do
-        local m, c = minutesOn(M.shiftDays(nowSec, -i))
+        local m, c = minutesOn(today - i)
         weekMin += m
         weekCount += c
-        prevWeekMin += (minutesOn(M.shiftDays(nowSec, -i - 7)))
+        prevWeekMin += (minutesOn(today - i - 7))
     end
 
     -- Streaks (a day counts when any focus time was logged).
     local streak = 0
-    local cursor = nowSec
-    if todayMin <= 0 then cursor = M.shiftDays(nowSec, -1) end -- today isn't over yet
+    local cursor = todayMin > 0 and today or today - 1 -- today isn't over yet
     while (minutesOn(cursor)) > 0 do
         streak += 1
-        cursor = M.shiftDays(cursor, -1)
+        cursor -= 1
     end
 
-    local keys = {}
-    for k in pairs(byDay) do table.insert(keys, k) end
-    table.sort(keys)
-    local best, run, prevNoon = 0, 0, nil
+    local days = {}
+    for n in pairs(byDay) do table.insert(days, n) end
+    table.sort(days)
+    local best, run, prev = 0, 0, nil
     local bestDay, bestDayMin = nil, 0
-    for _, k in ipairs(keys) do
-        local y, mo, d = k:match("^(%d+)%-(%d+)%-(%d+)$")
-        local noon = os.time({ year = tonumber(y), month = tonumber(mo), day = tonumber(d), hour = 12 })
-        if prevNoon and M.dayKey(M.shiftDays(prevNoon, 1)) == k then
-            run += 1
-        else
-            run = 1
-        end
-        prevNoon = noon
+    for _, n in ipairs(days) do
+        run = (prev and n == prev + 1) and run + 1 or 1
+        prev = n
         if run > best then best = run end
-        local m = byDay[k].sec / 60
-        if m > bestDayMin then bestDay, bestDayMin = k, m end
+        local m = byDay[n].sec / 60
+        if m > bestDayMin then bestDay, bestDayMin = n, m end
     end
 
     -- Heatmap: weeks as columns (Mon..Sun rows), ending with the current week.
     local weeks = M.HEATMAP_WEEKS
-    local todayKey = M.dayKey(nowSec)
-    local gridStart = M.shiftDays(nowSec, -(M.weekdayMon(nowSec) - 1) - (weeks - 1) * 7)
+    local gridStart = today - (weekdayOf(today) - 1) - (weeks - 1) * 7
     local peak = 0
-    for i = 0, weeks * 7 - 1 do
-        local m = minutesOn(M.shiftDays(gridStart, i))
+    for n = gridStart, gridStart + weeks * 7 - 1 do
+        local m = minutesOn(n)
         if m > peak then peak = m end
     end
     local columns, monthLabels = {}, {}
@@ -149,26 +194,25 @@ function M.compute(sessions, nowSec, goalMin)
     for w = 1, weeks do
         local cells = {}
         for wd = 1, 7 do
-            local sec = M.shiftDays(gridStart, (w - 1) * 7 + wd - 1)
-            local key = M.dayKey(sec)
-            local m, c = minutesOn(sec)
-            local future = key > todayKey
+            local n = gridStart + (w - 1) * 7 + wd - 1
+            local m, c = minutesOn(n)
+            local future = n > today
             if not future and m > 0 then
                 activeDays += 1
                 rangeMin += m
             end
             cells[wd] = {
-                date = key,
-                label = M.dayLabel(sec, true),
-                min = math.floor(m + 0.5),
+                date = keyOf(n),
+                label = labelOf(n, true),
+                min = floor(m + 0.5),
                 count = c,
                 level = future and -1 or levelFor(m, goalMin, peak),
-                today = key == todayKey,
+                today = n == today,
             }
         end
         columns[w] = cells
         -- Month label on the first column that contains the 1st..7th of a month.
-        local month = tonumber(os.date("%m", M.shiftDays(gridStart, (w - 1) * 7))) or 1
+        local _, month = civilFromDays(gridStart + (w - 1) * 7)
         if month ~= lastMonth then
             monthLabels[w] = MONTHS[month]
             lastMonth = month
@@ -179,20 +223,19 @@ function M.compute(sessions, nowSec, goalMin)
 
     -- Last 14 days for the bar chart.
     local recent = {}
-    for i = 13, 0, -1 do
-        local sec = M.shiftDays(nowSec, -i)
-        local m, c = minutesOn(sec)
+    for n = today - 13, today do
+        local m, c = minutesOn(n)
         table.insert(recent, {
-            date = M.dayKey(sec),
-            short = DAYS[M.weekdayMon(sec)]:sub(1, 1),
-            label = M.dayLabel(sec, false),
-            min = math.floor(m + 0.5),
+            date = keyOf(n),
+            short = DAYS[weekdayOf(n)]:sub(1, 1),
+            label = labelOf(n, false),
+            min = floor(m + 0.5),
             count = c,
         })
     end
 
-    for i = 1, 24 do hours[i] = math.floor(hours[i] + 0.5) end
-    for i = 1, 7 do weekdays[i] = math.floor(weekdays[i] + 0.5) end
+    for i = 1, 24 do hours[i] = floor(hours[i] + 0.5) end
+    for i = 1, 7 do weekdays[i] = floor(weekdays[i] + 0.5) end
 
     local peakHour, peakHourMin = nil, 0
     for i = 1, 24 do
@@ -200,21 +243,21 @@ function M.compute(sessions, nowSec, goalMin)
     end
 
     return {
-        today = { min = math.floor(todayMin + 0.5), count = todayCount },
+        today = { min = floor(todayMin + 0.5), count = todayCount },
         goal = goalMin,
-        week = { min = math.floor(weekMin + 0.5), prevMin = math.floor(prevWeekMin + 0.5), count = weekCount },
+        week = { min = floor(weekMin + 0.5), prevMin = floor(prevWeekMin + 0.5), count = weekCount },
         streak = streak,
         bestStreak = best,
-        total = { min = math.floor(totalSec / 60 + 0.5), count = totalCount, partial = partialCount, days = #keys },
+        total = { min = floor(totalSec / 60 + 0.5), count = totalCount, partial = partialCount, days = #days },
         completion = (totalCount + partialCount) > 0 and totalCount / (totalCount + partialCount) or nil,
-        bestDay = bestDay and { date = bestDay, min = math.floor(bestDayMin + 0.5) } or nil,
+        bestDay = bestDay and { date = keyOf(bestDay), min = floor(bestDayMin + 0.5) } or nil,
         peakHour = peakHour,
         heatmap = {
             weeks = weeks,
             columns = columns,
             months = monthLabels,
             activeDays = activeDays,
-            rangeMin = math.floor(rangeMin + 0.5),
+            rangeMin = floor(rangeMin + 0.5),
             useGoal = goalMin > 0,
         },
         recent = recent,
