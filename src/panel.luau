@@ -1,13 +1,18 @@
 --!nonstrict
--- FocusFlow - panel: timer controls + insights (heatmap, trends, rhythms).
+-- Pomodoro Heatmap - panel: timer, insights (heatmap, trends, rhythms) and quick settings.
 
-local tab = "timer" -- "timer" | "insights"
+local tab = "timer" -- "timer" | "insights" | "settings"
 local isOpen = false
 
 local PHASE = {
-    work = { name = "Focus", glyph = "brain", color = "primary" },
-    short = { name = "Short break", glyph = "coffee", color = "tertiary" },
-    long = { name = "Long break", glyph = "armchair", color = "tertiary" },
+    work = { name = "Focus", glyph = "brain", color = "primary", start = "Start focus" },
+    short = { name = "Short break", glyph = "coffee", color = "tertiary", start = "Start break" },
+    long = { name = "Long break", glyph = "armchair", color = "tertiary", start = "Start break" },
+}
+local PRESETS = {
+    work = { 15, 25, 45, 60, 90 },
+    short = { 3, 5, 10 },
+    long = { 10, 15, 20, 30 },
 }
 
 -- Heat levels: none, 1..4 (4 = daily goal reached, or the busiest day if no goal)
@@ -16,10 +21,18 @@ local CELL, GAP = 11, 2
 local DAY_LABELS = { "Mon", "", "Wed", "", "Fri", "", "" }
 local WEEKDAYS = { "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun" }
 
+local SOUND_IDS = { "soft-chime", "gentle-bell", "wood", "system-bell", "system-message", "system-complete", "custom", "none" }
+local SOUND_LABELS = { "Soft chime", "Gentle bell", "Wood", "System bell", "System message", "System complete",
+    "Custom file", "None" }
+
 local nonce = 0
-local function send(cmd)
+local function send(cmd, arg)
     nonce += 1
-    noctalia.state.set("focusflow.cmd", { cmd = cmd, n = nonce .. ":" .. noctalia.nowMs() })
+    noctalia.state.set("pomo.cmd", { cmd = cmd, arg = arg, n = nonce .. ":" .. noctalia.nowMs() })
+end
+
+local function setPref(key, value)
+    send("pref", { key = key, value = value })
 end
 
 -- ------------------------------------------------------------------ helpers
@@ -86,11 +99,12 @@ end
 
 local function header(t)
     local p = PHASE[t and t.phase or "work"] or PHASE.work
-    return ui.row({ gap = 8, align = "center" }, {
+    return ui.row({ gap = 6, align = "center" }, {
         ui.glyph({ name = p.glyph, size = 18, color = p.color }),
-        ui.label({ text = "FocusFlow", fontSize = 16, fontWeight = "bold", color = "on_surface", flexGrow = 1 }),
+        ui.label({ text = "Pomodoro", fontSize = 16, fontWeight = "bold", color = "on_surface", flexGrow = 1 }),
         tabButton("timer", "Timer", "hourglass"),
         tabButton("insights", "Insights", "chart-bar"),
+        tabButton("settings", nil, "settings"),
     })
 end
 
@@ -110,6 +124,29 @@ local function roundDots(t)
     return ui.row({ gap = 6, align = "center", justify = "center" }, dots)
 end
 
+-- Idle: the length can be changed before starting (±, presets, save as default).
+local function lengthPicker(t)
+    local minutes = math.floor(t.total / 60)
+    local step = minutes > 5 and 5 or 1
+    local chips = {}
+    for _, m in ipairs(PRESETS[t.phase] or PRESETS.work) do
+        table.insert(chips, ui.button({
+            text = tostring(m), variant = m == minutes and "secondary" or "ghost",
+            height = 26, flexGrow = 1, onClick = function() send("length", m) end,
+        }))
+    end
+    local rows = { ui.row({ gap = 4 }, chips) }
+    if t.total ~= t.defaultTotal then
+        local key = t.phase == "work" and "work-minutes" or (t.phase == "short" and "short-break-minutes" or "long-break-minutes")
+        table.insert(rows, ui.row({ gap = 6, align = "center", justify = "center" }, {
+            muted(string.format("Default is %s", duration(t.defaultTotal / 60)), 11),
+            ui.button({ text = "Make default", glyph = "pin", variant = "ghost", height = 24,
+                onClick = function() setPref(key, minutes) end }),
+        }))
+    end
+    return ui.column({ gap = 6 }, rows), step, minutes
+end
+
 local function timerHero(t)
     local p = PHASE[t.phase] or PHASE.work
     local active = t.status ~= "idle"
@@ -117,53 +154,97 @@ local function timerHero(t)
     local stateText = t.status == "paused" and "Paused" or (t.status == "running" and "In progress" or "Ready")
     local accent = t.status == "paused" and "on_surface_variant" or p.color
 
-    return card({ padding = 20, gap = 14, align = "stretch" }, {
+    local clockLabel = ui.label({
+        text = clock(t.remaining),
+        fontSize = 58,
+        fontWeight = "bold",
+        fontFamily = "monospace",
+        color = active and accent or "on_surface",
+        textAlign = "center",
+    })
+
+    local children = {
         ui.row({ align = "center", gap = 8 }, {
             ui.box({ width = 8, height = 8, radius = 4, fill = accent }),
             ui.label({ text = p.name, fontSize = 13, fontWeight = "bold", color = accent, flexGrow = 1 }),
             muted(t.phase == "work" and string.format("Round %d / %d", t.round, t.rounds) or stateText, 12),
         }),
-        ui.column({ align = "center", gap = 2 }, {
-            ui.label({
-                text = clock(t.remaining),
-                fontSize = 58,
-                fontWeight = "bold",
-                fontFamily = "monospace",
-                color = active and accent or "on_surface",
-                textAlign = "center",
-            }),
+    }
+
+    if active then
+        table.insert(children, ui.column({ align = "center", gap = 2 }, {
+            clockLabel,
             muted(t.phase == "work" and stateText or "Step away from the screen", 12),
-        }),
-        ui.progress({ progress = progress, height = 6, radius = 3, fill = accent, track = "on_surface/0.1" }),
-        roundDots(t),
-    })
+        }))
+        table.insert(children, ui.progress({ progress = progress, height = 6, radius = 3, fill = accent,
+            track = "on_surface/0.1" }))
+    else
+        local picker, step, minutes = lengthPicker(t)
+        table.insert(children, ui.row({ align = "center", gap = 8 }, {
+            ui.button({ glyph = "minus", variant = "ghost", width = 40, height = 40, enabled = minutes > 1,
+                onClick = function() send("length", math.max(1, minutes - step)) end }),
+            ui.column({ flexGrow = 1, align = "center" }, { clockLabel }),
+            ui.button({ glyph = "plus", variant = "ghost", width = 40, height = 40,
+                onClick = function() send("length", minutes + step) end }),
+        }))
+        table.insert(children, picker)
+    end
+    table.insert(children, roundDots(t))
+    return card({ padding = 18, gap = 12, align = "stretch" }, children)
+end
+
+local function action(text, glyph, cmd, enabled)
+    return ui.button({ text = text, glyph = glyph, variant = "ghost", height = 32, flexGrow = 1,
+        enabled = enabled ~= false, onClick = function() send(cmd) end })
 end
 
 local function controls(t)
+    local p = PHASE[t.phase] or PHASE.work
     local running = t.status == "running"
-    local primaryText = running and "Pause" or (t.status == "paused" and "Resume" or "Start")
     local active = t.status ~= "idle"
+    local isWork = t.phase == "work"
+
+    if not active then
+        local row1 = { ui.button({ text = p.start, glyph = "player-play", variant = "primary", height = 44,
+            flexGrow = 1, onClick = function() send("start") end }) }
+        if not isWork then
+            table.insert(row1, ui.button({ text = "Skip break", glyph = "player-track-next", variant = "outline",
+                height = 44, flexGrow = 1, onClick = function() send("skip") end }))
+        end
+        local rows = { ui.row({ gap = 8 }, row1) }
+        if t.round > 1 or not isWork then
+            table.insert(rows, ui.row({ gap = 4 }, {
+                action("Skip to next", "player-skip-forward", "skip", isWork),
+                action("Reset cycle", "player-stop", "stop"),
+            }))
+        end
+        return ui.column({ gap = 6 }, rows)
+    end
+
     local row1 = ui.row({ gap = 8, align = "center" }, {
-        ui.button({ glyph = "minus", variant = "outline", width = 44, height = 44, enabled = active,
+        ui.button({ glyph = "minus", variant = "outline", width = 44, height = 44,
             onClick = function() send("minus") end }),
-        ui.button({ text = primaryText, glyph = running and "player-pause" or "player-play", variant = "primary",
-            height = 44, flexGrow = 1, onClick = function() send("toggle") end }),
-        ui.button({ glyph = "plus", variant = "outline", width = 44, height = 44, enabled = active,
+        ui.button({ text = running and "Pause" or "Resume", glyph = running and "player-pause" or "player-play",
+            variant = "primary", height = 44, flexGrow = 1, onClick = function() send("toggle") end }),
+        ui.button({ glyph = "plus", variant = "outline", width = 44, height = 44,
             onClick = function() send("plus") end }),
     })
-    local row2 = {
-        ui.button({ text = "Skip", glyph = "player-skip-forward", variant = "ghost", height = 32, flexGrow = 1,
-            onClick = function() send("skip") end }),
-        ui.button({ text = "Restart", glyph = "refresh", variant = "ghost", height = 32, flexGrow = 1,
-            enabled = active, onClick = function() send("reset") end }),
-        ui.button({ text = "New cycle", glyph = "player-stop", variant = "ghost", height = 32, flexGrow = 1,
-            enabled = active or t.round > 1 or t.phase ~= "work", onClick = function() send("stop") end }),
-    }
-    if t.phase ~= "work" then
-        row2[1] = ui.button({ text = "Focus now", glyph = "brain", variant = "ghost", height = 32, flexGrow = 1,
-            onClick = function() send("focus") end })
+    local row2
+    if isWork then
+        row2 = {
+            action("Finish", "circle-check", "finish"),
+            action("Skip", "player-skip-forward", "skip"),
+            action("Restart", "refresh", "reset"),
+            action("Stop", "player-stop", "stop"),
+        }
+    else
+        row2 = {
+            action("Skip break", "player-track-next", "skip"),
+            action("Focus now", "brain", "focus"),
+            action("Stop", "player-stop", "stop"),
+        }
     end
-    return ui.column({ gap = 6 }, { row1, ui.row({ gap = 4 }, row2) })
+    return ui.column({ gap = 6 }, { row1, ui.row({ gap = 2 }, row2) })
 end
 
 local function miniWeek(s)
@@ -217,7 +298,106 @@ end
 local function timerTab(t, s)
     local children = { timerHero(t), controls(t) }
     if s then table.insert(children, todayCard(s)) end
-    return ui.column({ gap = 12, flexGrow = 1 }, children)
+    return ui.scroll({ key = "timer-scroll", flexGrow = 1, gap = 12 }, children)
+end
+
+-- ------------------------------------------------------------------ settings tab
+
+local function stepper(label, hint, value, unit, step, min, max, key)
+    return ui.row({ gap = 8, align = "center" }, {
+        ui.column({ flexGrow = 1, gap = 1 }, {
+            ui.label({ text = label, fontSize = 13, color = "on_surface" }),
+            hint and muted(hint, 10) or nil,
+        }),
+        ui.button({ glyph = "minus", variant = "ghost", width = 30, height = 30, enabled = value > min,
+            onClick = function() setPref(key, math.max(min, value - step)) end }),
+        ui.column({ width = 58, align = "center" }, {
+            ui.label({ text = unit == "min" and duration(value) or tostring(value), fontSize = 13,
+                fontWeight = "bold", color = "on_surface" }),
+        }),
+        ui.button({ glyph = "plus", variant = "ghost", width = 30, height = 30, enabled = value < max,
+            onClick = function() setPref(key, math.min(max, value + step)) end }),
+    })
+end
+
+local function toggleRow(label, hint, checked, key, enabled)
+    return ui.row({ gap = 8, align = "center" }, {
+        ui.column({ flexGrow = 1, gap = 1 }, {
+            ui.label({ text = label, fontSize = 13, color = enabled == false and "on_surface_variant" or "on_surface" }),
+            hint and muted(hint, 10) or nil,
+        }),
+        ui.toggle({ checked = checked, enabled = enabled ~= false,
+            onChange = function() setPref(key, not checked) end }),
+    })
+end
+
+local function indexOf(list, v)
+    for i, x in ipairs(list) do if x == v then return i - 1 end end
+    return 0
+end
+
+local function soundRow(label, current, key)
+    return ui.column({ gap = 6 }, {
+        ui.label({ text = label, fontSize = 13, color = "on_surface" }),
+        ui.row({ gap = 6, align = "center" }, {
+            ui.column({ flexGrow = 1 }, {
+                ui.select({ options = SOUND_LABELS, selectedIndex = indexOf(SOUND_IDS, current), controlSize = "md",
+                    onChange = function(index)
+                        local id = SOUND_IDS[(math.floor(tonumber(index) or 0)) + 1]
+                        if id and id ~= current then
+                            setPref(key, id)
+                            send("preview", id)
+                        end
+                    end }),
+            }),
+            ui.button({ glyph = "player-play", variant = "outline", width = 36, height = 34,
+                enabled = current ~= "none", onClick = function() send("preview", current) end }),
+        }),
+    })
+end
+
+local lastVolume = nil
+local function settingsTab(c)
+    if not c then
+        return ui.column({ flexGrow = 1, align = "center", justify = "center" }, { muted("Loading…", 13) })
+    end
+    lastVolume = c.volume
+    return ui.scroll({ key = "settings-scroll", flexGrow = 1, gap = 12 }, {
+        card({}, {
+            sectionTitle("hourglass", "Durations"),
+            stepper("Focus", nil, c.work, "min", 5, 5, 180, "work-minutes"),
+            stepper("Short break", nil, c.short, "min", 1, 1, 60, "short-break-minutes"),
+            stepper("Long break", nil, c.long, "min", 5, 5, 120, "long-break-minutes"),
+            stepper("Rounds", "Focus sessions before the long break", c.rounds, "", 1, 1, 12, "rounds"),
+            stepper("Daily goal", "Full colour on the heatmap", c.goal, "min", 15, 0, 960, "daily-goal-minutes"),
+        }),
+        card({}, {
+            sectionTitle("adjustments-horizontal", "Flow"),
+            toggleRow("Breaks", "Off: go straight to the next focus session", c.breaks, "breaks-enabled"),
+            toggleRow("Auto-start breaks", nil, c.autoBreaks, "auto-start-breaks", c.breaks),
+            toggleRow("Auto-start focus", "After a break ends", c.autoWork, "auto-start-work"),
+            toggleRow("Notifications", nil, c.notify, "notify"),
+        }),
+        card({}, {
+            sectionTitle("volume", "Sound"),
+            soundRow("When focus ends", c.focusSound, "focus-end-sound"),
+            soundRow("When a break ends", c.breakSound, "break-end-sound"),
+            ui.row({ gap = 10, align = "center" }, {
+                ui.label({ text = "Volume", fontSize = 13, color = "on_surface" }),
+                ui.slider({ key = "pomo-volume", min = 0, max = 100, step = 5, value = c.volume, flexGrow = 1,
+                    onChange = function(v)
+                        local n = math.floor(tonumber(v) or c.volume)
+                        if n ~= lastVolume then
+                            lastVolume = n
+                            setPref("sound-volume", n)
+                        end
+                    end }),
+                ui.column({ width = 40, align = "end" }, { muted(string.format("%d%%", c.volume), 12) }),
+            }),
+        }),
+        ui.button({ text = "All settings", glyph = "settings", variant = "ghost", height = 32,
+            onClick = function() noctalia.openSettings() end }),
+    })
 end
 
 -- ------------------------------------------------------------------ insights tab
@@ -427,16 +607,18 @@ end
 -- ------------------------------------------------------------------ render
 
 function render()
-    local t = noctalia.state.get("focusflow.timer")
-    local s = noctalia.state.get("focusflow.stats")
+    local t = noctalia.state.get("pomo.timer")
+    local s = noctalia.state.get("pomo.stats")
     local body
     if not t then
         body = ui.column({ flexGrow = 1, align = "center", justify = "center", gap = 8 }, {
             ui.glyph({ name = "brain", size = 28, color = "primary" }),
-            muted("Starting the FocusFlow engine…", 13),
+            muted("Starting the Pomodoro engine…", 13),
         })
     elseif tab == "insights" then
         body = insightsTab(s)
+    elseif tab == "settings" then
+        body = settingsTab(noctalia.state.get("pomo.config"))
     else
         body = timerTab(t, s)
     end
@@ -445,7 +627,7 @@ end
 
 function onOpen(context)
     isOpen = true
-    if context == "insights" or context == "timer" then tab = context end
+    if context == "insights" or context == "timer" or context == "settings" then tab = context end
     render()
 end
 
@@ -453,13 +635,17 @@ function onClose()
     isOpen = false
 end
 
-noctalia.state.watch("focusflow.timer", function()
-    -- The insights view doesn't depend on the ticking clock; skip per-second redraws there.
+noctalia.state.watch("pomo.timer", function()
+    -- Only the timer tab shows the ticking clock; skip per-second redraws elsewhere.
     if isOpen and tab == "timer" then render() end
 end)
 
-noctalia.state.watch("focusflow.stats", function()
-    if isOpen then render() end
+noctalia.state.watch("pomo.stats", function()
+    if isOpen and tab ~= "settings" then render() end
+end)
+
+noctalia.state.watch("pomo.config", function()
+    if isOpen and tab == "settings" then render() end
 end)
 
 render()

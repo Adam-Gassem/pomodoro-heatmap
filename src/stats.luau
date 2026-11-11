@@ -1,5 +1,5 @@
 --!nonstrict
--- FocusFlow - pure analytics over the session log.
+-- Pomodoro Heatmap - pure analytics over the session log.
 --
 -- A session record is { s = startSec, e = endSec, d = focusedSec, c = completed }.
 -- Everything is bucketed by the *local* calendar day of the session start.

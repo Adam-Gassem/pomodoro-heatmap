@@ -1,11 +1,11 @@
 --!nonstrict
--- FocusFlow - bar capsule.
+-- Pomodoro Heatmap - bar capsule.
 --   idle     glyph (+ today's finished sessions)
 --   running  stage glyph, countdown, thin progress line
 --   paused   same, dimmed
 -- Click: panel · Right click: start/pause · Middle click: skip · Scroll: ±1 min
 
-local PANEL_ID = "adam-gassem/focusflow:panel"
+local PANEL_ID = "adam-gassem/pomodoro-heatmap:panel"
 local isVertical = barWidget.isVertical()
 
 local PHASE = {
@@ -15,9 +15,9 @@ local PHASE = {
 }
 
 local nonce = 0
-local function send(cmd)
+local function send(cmd, arg)
     nonce += 1
-    noctalia.state.set("focusflow.cmd", { cmd = cmd, n = nonce .. ":" .. noctalia.nowMs() })
+    noctalia.state.set("pomo.cmd", { cmd = cmd, arg = arg, n = nonce .. ":" .. noctalia.nowMs() })
 end
 
 local function clock(sec)
@@ -79,7 +79,7 @@ local function render(t)
             table.insert(lines, string.format("Round %d of %d", t.round, t.rounds))
         end
     else
-        table.insert(lines, "FocusFlow · ready")
+        table.insert(lines, string.format("Pomodoro · ready (%s)", clock(t.total)))
     end
     local today = string.format("Today: %d min · %d sessions", t.todayMin or 0, t.todayCount or 0)
     if (t.goal or 0) > 0 then
@@ -89,7 +89,7 @@ local function render(t)
     if (t.streak or 0) > 0 then
         table.insert(lines, string.format("Streak: %d day%s", t.streak, t.streak == 1 and "" or "s"))
     end
-    table.insert(lines, "Click: panel · Right: start/pause · Middle: skip · Scroll: ±1 min")
+    table.insert(lines, "Click: panel · Right: start/pause · Middle: skip · Scroll: adjust time")
     barWidget.setTooltip(table.concat(lines, "\n"))
 end
 
@@ -107,10 +107,16 @@ end
 
 function onScroll(axis, steps, startsGesture)
     if axis ~= "vertical" or not startsGesture then return end
-    local t = noctalia.state.get("focusflow.timer")
-    if not t or t.status == "idle" then return end
-    send(steps > 0 and "minus" or "plus")
+    local t = noctalia.state.get("pomo.timer")
+    if not t then return end
+    if t.status == "idle" then -- set the length before starting, in 5 min steps
+        local minutes = math.floor(t.total / 60)
+        local step = minutes > 5 and 5 or 1
+        send("length", math.max(1, minutes + (steps > 0 and -step or step)))
+    else
+        send(steps > 0 and "minus" or "plus")
+    end
 end
 
-noctalia.state.watch("focusflow.timer", render)
-render(noctalia.state.get("focusflow.timer"))
+noctalia.state.watch("pomo.timer", render)
+render(noctalia.state.get("pomo.timer"))

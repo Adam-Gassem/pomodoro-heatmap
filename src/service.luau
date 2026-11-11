@@ -1,55 +1,26 @@
 --!nonstrict
--- FocusFlow - timer engine, persistence and analytics publisher.
+-- Pomodoro Heatmap - timer engine, preferences, persistence and analytics.
 --
 -- The timer is anchored on wall-clock deadlines (endsAt), not on tick counts,
 -- so it stays correct across suspend, lag spikes and shell restarts.
 --
 -- Shared state (noctalia.state):
---   focusflow.timer  snapshot for the bar widget and panel (published each second)
---   focusflow.stats  analytics (published on change and at midnight)
---   focusflow.cmd    { cmd = "...", n = nonce } commands from the widget/panel
+--   pomo.timer   snapshot for the bar widget and panel (published each second)
+--   pomo.config  effective preferences (published on change)
+--   pomo.stats   analytics (published on change and at midnight)
+--   pomo.cmd     { cmd = "...", arg = ..., n = nonce } commands from widget/panel
 
 local Stats = require("./src/stats.luau")
 
 local DATA_DIR = noctalia.pluginDataDir()
 local HISTORY_PATH = DATA_DIR .. "/history.json"
 local STATE_PATH = DATA_DIR .. "/state.json"
-local MIN_PARTIAL_SEC = 60
+local PREFS_PATH = DATA_DIR .. "/prefs.json"
+local MIN_LOGGED_SEC = 60
+local SOUND_DIR = noctalia.pluginDir() .. "/resources/sounds/"
+local SYSTEM_SOUND_DIR = "/usr/share/sounds/freedesktop/stereo/"
 
 noctalia.mkdirAll(DATA_DIR)
-
--- ------------------------------------------------------------------ config
-
-local cfg = {}
-local function int(key, fallback)
-    local v = tonumber(noctalia.getConfig(key))
-    return v and math.floor(v) or fallback
-end
-local function bool(key, fallback)
-    local v = noctalia.getConfig(key)
-    if v == nil then return fallback end
-    return v == true
-end
-local function loadConfig()
-    cfg = {
-        work = math.max(1, int("work-minutes", 25)) * 60,
-        short = math.max(1, int("short-break-minutes", 5)) * 60,
-        long = math.max(1, int("long-break-minutes", 15)) * 60,
-        rounds = math.max(1, int("rounds", 4)),
-        autoBreaks = bool("auto-start-breaks", true),
-        autoWork = bool("auto-start-work", false),
-        goal = math.max(0, int("daily-goal-minutes", 120)),
-        logPartial = bool("log-partial", true),
-        notify = bool("notify", true),
-        sound = bool("sound", true),
-        soundFile = noctalia.getConfig("sound-file") or "/usr/share/sounds/freedesktop/stereo/complete.oga",
-    }
-end
-loadConfig()
-
-local function phaseLength(phase)
-    return (cfg[phase] or cfg.work) * 1000
-end
 
 -- ------------------------------------------------------------------ persistence
 
@@ -66,6 +37,101 @@ local function writeJson(path, data)
     noctalia.writeFile(tmp, noctalia.json.encode(data))
     noctalia.renameFile(tmp, path)
 end
+
+-- ------------------------------------------------------------------ preferences
+--
+-- Values come from Noctalia's plugin settings, but the panel can override them
+-- (plugins can't write their own settings). Whichever was changed last wins:
+-- editing a setting in Noctalia's settings drops the panel override for it.
+
+local SCHEMA = {
+    ["work-minutes"] = { kind = "int", default = 25, min = 1, max = 180 },
+    ["short-break-minutes"] = { kind = "int", default = 5, min = 1, max = 60 },
+    ["long-break-minutes"] = { kind = "int", default = 15, min = 1, max = 120 },
+    ["rounds"] = { kind = "int", default = 4, min = 1, max = 12 },
+    ["breaks-enabled"] = { kind = "bool", default = true },
+    ["auto-start-breaks"] = { kind = "bool", default = true },
+    ["auto-start-work"] = { kind = "bool", default = false },
+    ["daily-goal-minutes"] = { kind = "int", default = 120, min = 0, max = 960 },
+    ["log-partial"] = { kind = "bool", default = true },
+    ["notify"] = { kind = "bool", default = true },
+    ["focus-end-sound"] = { kind = "string", default = "soft-chime" },
+    ["break-end-sound"] = { kind = "string", default = "wood" },
+    ["sound-volume"] = { kind = "int", default = 60, min = 0, max = 100 },
+    ["custom-sound-file"] = { kind = "string", default = "" },
+}
+
+local prefs = readJson(PREFS_PATH) or {}
+local seenConfig = {}
+
+local function coerce(spec, v)
+    if v == nil then return nil end
+    if spec.kind == "int" then
+        v = tonumber(v)
+        if not v then return nil end
+        return math.clamp(math.floor(v), spec.min, spec.max)
+    elseif spec.kind == "bool" then
+        if type(v) == "boolean" then return v end
+        if v == "true" then return true end
+        if v == "false" then return false end
+        return nil
+    end
+    return tostring(v)
+end
+
+local function value(key)
+    local spec = SCHEMA[key]
+    local v = coerce(spec, prefs[key])
+    if v == nil then v = coerce(spec, noctalia.getConfig(key)) end
+    if v == nil then v = spec.default end
+    return v
+end
+
+local cfg = {}
+local function loadConfig()
+    cfg = {
+        work = value("work-minutes") * 60,
+        short = value("short-break-minutes") * 60,
+        long = value("long-break-minutes") * 60,
+        rounds = value("rounds"),
+        breaks = value("breaks-enabled"),
+        autoBreaks = value("auto-start-breaks"),
+        autoWork = value("auto-start-work"),
+        goal = value("daily-goal-minutes"),
+        logPartial = value("log-partial"),
+        notify = value("notify"),
+        focusSound = value("focus-end-sound"),
+        breakSound = value("break-end-sound"),
+        volume = value("sound-volume"),
+        customSound = noctalia.expandPath(value("custom-sound-file")),
+    }
+end
+
+for key in pairs(SCHEMA) do seenConfig[key] = noctalia.getConfig(key) end
+loadConfig()
+
+local function phaseLength(phase)
+    return (cfg[phase] or cfg.work) * 1000
+end
+
+local function publishConfig()
+    noctalia.state.set("pomo.config", {
+        work = cfg.work / 60,
+        short = cfg.short / 60,
+        long = cfg.long / 60,
+        rounds = cfg.rounds,
+        breaks = cfg.breaks,
+        autoBreaks = cfg.autoBreaks,
+        autoWork = cfg.autoWork,
+        goal = cfg.goal,
+        notify = cfg.notify,
+        focusSound = cfg.focusSound,
+        breakSound = cfg.breakSound,
+        volume = cfg.volume,
+    })
+end
+
+-- ------------------------------------------------------------------ history
 
 local history = readJson(HISTORY_PATH)
 if not history or type(history.sessions) ~= "table" then
@@ -106,6 +172,10 @@ local function remainingNow()
     return T.remainingMs
 end
 
+local function elapsedSec()
+    return math.floor((T.totalMs - remainingNow()) / 1000 + 0.5)
+end
+
 -- ------------------------------------------------------------------ publishing
 
 local currentStats = nil
@@ -114,7 +184,7 @@ local statsDay = Stats.dayKey(os.time())
 local function publishStats()
     currentStats = Stats.compute(history.sessions, os.time(), cfg.goal)
     statsDay = Stats.dayKey(os.time())
-    noctalia.state.set("focusflow.stats", currentStats)
+    noctalia.state.set("pomo.stats", currentStats)
 end
 
 local lastPublishedSec = -1
@@ -123,13 +193,15 @@ local function publishTimer(force)
     local sec = math.ceil(rem / 1000)
     if not force and sec == lastPublishedSec then return end
     lastPublishedSec = sec
-    noctalia.state.set("focusflow.timer", {
+    noctalia.state.set("pomo.timer", {
         phase = T.phase,
         status = T.status,
         remaining = sec,
         total = math.floor(T.totalMs / 1000),
+        defaultTotal = math.floor(phaseLength(T.phase) / 1000),
         round = T.round,
         rounds = cfg.rounds,
+        breaks = cfg.breaks,
         todayMin = currentStats and currentStats.today.min or 0,
         todayCount = currentStats and currentStats.today.count or 0,
         goal = cfg.goal,
@@ -139,23 +211,45 @@ end
 
 -- ------------------------------------------------------------------ logging
 
-local function logFocus(completed)
+-- mode: "complete" (ran to the end), "early" (user finished it), "partial" (skipped/stopped)
+local function logFocus(mode)
     if T.phase ~= "work" or not T.startedAt then return end
-    local focused = math.floor((T.totalMs - remainingNow()) / 1000 + 0.5)
-    if completed then focused = math.floor(T.totalMs / 1000) end
-    if not completed and (not cfg.logPartial or focused < MIN_PARTIAL_SEC) then return end
+    local focused = mode == "complete" and math.floor(T.totalMs / 1000) or elapsedSec()
+    if focused < MIN_LOGGED_SEC then return end
+    if mode == "partial" and not cfg.logPartial then return end
     table.insert(history.sessions, {
         s = T.startedAt,
         e = os.time(),
         d = focused,
         p = math.floor(T.totalMs / 1000),
-        c = completed,
+        c = mode ~= "partial",
     })
     writeJson(HISTORY_PATH, history)
     publishStats()
 end
 
--- ------------------------------------------------------------------ alerts
+-- ------------------------------------------------------------------ sounds & alerts
+
+local function soundPath(id)
+    if id == "soft-chime" or id == "gentle-bell" or id == "wood" then
+        return SOUND_DIR .. id .. ".wav"
+    elseif id == "system-bell" then
+        return SYSTEM_SOUND_DIR .. "bell.oga"
+    elseif id == "system-message" then
+        return SYSTEM_SOUND_DIR .. "message.oga"
+    elseif id == "system-complete" then
+        return SYSTEM_SOUND_DIR .. "complete.oga"
+    elseif id == "custom" then
+        return cfg.customSound
+    end
+    return nil
+end
+
+local function playSound(id)
+    local path = soundPath(id)
+    if not path or path == "" or cfg.volume <= 0 or not noctalia.fileExists(path) then return end
+    noctalia.runAsync({ "pw-play", string.format("--volume=%.2f", cfg.volume / 100), path })
+end
 
 local MESSAGES = {
     work = { "Focus session complete", "Nice work, time for a break." },
@@ -167,14 +261,15 @@ local function alert(finishedPhase)
     local msg = MESSAGES[finishedPhase]
     if cfg.notify and msg then
         local body = msg[2]
-        if finishedPhase == "work" and currentStats then
-            body = string.format("%s  Today: %d min · %d sessions", body, currentStats.today.min, currentStats.today.count)
+        if finishedPhase == "work" then
+            if not cfg.breaks then body = "Nice work. On to the next one." end
+            if currentStats then
+                body = string.format("%s  Today: %d min · %d sessions", body, currentStats.today.min, currentStats.today.count)
+            end
         end
-        noctalia.notify("FocusFlow · " .. msg[1], body)
+        noctalia.notify("Pomodoro · " .. msg[1], body)
     end
-    if cfg.sound and cfg.soundFile ~= "" and noctalia.fileExists(cfg.soundFile) then
-        noctalia.runAsync({ "pw-play", cfg.soundFile })
-    end
+    playSound(finishedPhase == "work" and cfg.focusSound or cfg.breakSound)
 end
 
 -- ------------------------------------------------------------------ transitions
@@ -193,25 +288,21 @@ local function enterPhase(phase, autostart)
     end
 end
 
-local function nextPhase()
+local function advance(auto)
+    local nxt
     if T.phase == "work" then
-        if T.round >= cfg.rounds then return "long" end
-        return "short"
+        if cfg.breaks then
+            nxt = T.round >= cfg.rounds and "long" or "short"
+        else
+            nxt = "work"
+            T.round = (T.round % cfg.rounds) + 1
+        end
+    else
+        T.round = T.phase == "long" and 1 or (T.round % cfg.rounds) + 1
+        nxt = "work"
     end
-    return "work"
-end
-
-local function advance(autoFromFinish)
-    local finished = T.phase
-    local nxt = nextPhase()
-    if finished ~= "work" then
-        T.round = finished == "long" and 1 or (T.round % cfg.rounds) + 1
-    end
-    local auto = false
-    if autoFromFinish then
-        auto = (nxt == "work" and cfg.autoWork) or (nxt ~= "work" and cfg.autoBreaks)
-    end
-    enterPhase(nxt, auto)
+    local start = auto and ((nxt == "work" and cfg.autoWork) or (nxt ~= "work" and cfg.autoBreaks))
+    enterPhase(nxt, start)
 end
 
 local actions = {}
@@ -234,30 +325,37 @@ function actions.toggle()
     if T.status == "running" then actions.pause() else actions.start() end
 end
 
-function actions.skip()
-    logFocus(false)
+function actions.skip() -- move on without counting the session as done
+    logFocus("partial")
     advance(false)
 end
 
-function actions.reset() -- restart the current phase
-    logFocus(false)
+function actions.finish() -- end now and count it as done (focus) / end the break
+    if T.phase == "work" and T.startedAt then
+        logFocus("early")
+        advance(true)
+    else
+        advance(false)
+    end
+end
+
+function actions.reset() -- restart the current stage
+    logFocus("partial")
     enterPhase(T.phase, false)
 end
 
-function actions.stop() -- back to the start of a fresh cycle
-    logFocus(false)
+function actions.stop() -- stop and go back to the start of a cycle
+    logFocus("partial")
     T.round = 1
     enterPhase("work", false)
 end
 
 function actions.focus() -- jump straight into a focus session now
-    if T.phase ~= "work" then
-        enterPhase("work", false)
-    end
+    if T.phase ~= "work" then enterPhase("work", false) end
     actions.start()
 end
 
-function actions.adjust(deltaSec) -- +/- minutes on the running/paused clock
+function actions.adjust(deltaSec) -- +/- on the clock, any state
     local newRem = math.max(60 * 1000, remainingNow() + deltaSec * 1000)
     T.totalMs = math.max(T.totalMs + deltaSec * 1000, newRem)
     if T.status == "running" then
@@ -267,25 +365,49 @@ function actions.adjust(deltaSec) -- +/- minutes on the running/paused clock
     end
 end
 
-local function finish()
-    local finished = T.phase
-    T.remainingMs = 0
-    logFocus(true)
-    alert(finished)
-    advance(true)
+function actions.length(minutes) -- set this stage's length before it starts
+    minutes = tonumber(minutes)
+    if not minutes or T.status ~= "idle" then return end
+    T.totalMs = math.clamp(math.floor(minutes), 1, 600) * 60 * 1000
+    T.remainingMs = T.totalMs
 end
 
+function actions.pref(arg) -- { key = "...", value = ... } from the panel
+    if type(arg) ~= "table" or not SCHEMA[arg.key] then return end
+    local v = coerce(SCHEMA[arg.key], arg.value)
+    if v == nil then return end
+    local wasDefault = T.status == "idle" and T.totalMs == phaseLength(T.phase)
+    prefs[arg.key] = v
+    writeJson(PREFS_PATH, prefs)
+    loadConfig()
+    if wasDefault then -- an untouched idle stage follows its new default length
+        T.totalMs = phaseLength(T.phase)
+        T.remainingMs = T.totalMs
+    end
+    if T.round > cfg.rounds then T.round = 1 end
+    publishConfig()
+    publishStats()
+end
+
+function actions.preview(id)
+    playSound(id)
+end
+
+local ALIASES = {
+    plus = function() actions.adjust(60) end,
+    minus = function() actions.adjust(-60) end,
+    ["skip-break"] = function() if T.phase ~= "work" then actions.skip() end end,
+    ["refresh-stats"] = function() publishStats() end,
+}
+
 local function run(cmd, arg)
-    if cmd == "plus" then
-        actions.adjust(60)
-    elseif cmd == "minus" then
-        actions.adjust(-60)
-    elseif cmd == "refresh-stats" then
-        publishStats()
-    elseif actions[cmd] then
+    local fn = ALIASES[cmd]
+    if fn then
+        fn()
+    elseif actions[cmd] and cmd ~= "adjust" then
         actions[cmd](arg)
     else
-        noctalia.log("focusflow: unknown command " .. tostring(cmd))
+        noctalia.log("pomodoro-heatmap: unknown command " .. tostring(cmd))
         return
     end
     saveState()
@@ -294,23 +416,45 @@ end
 
 -- ------------------------------------------------------------------ wiring
 
-noctalia.state.watch("focusflow.cmd", function(msg)
+noctalia.state.watch("pomo.cmd", function(msg)
     if type(msg) == "table" and msg.cmd then run(msg.cmd, msg.arg) end
 end)
 
--- noctalia msg plugin adam-gassem/focusflow:engine all <event>
-function onIpc(event, _payload)
-    run(event)
+-- noctalia msg plugin adam-gassem/pomodoro-heatmap:engine all <event> [payload]
+function onIpc(event, payload)
+    if event == "length" then
+        run("length", payload)
+    elseif event == "set" then -- payload "key=value", e.g. "work-minutes=50"
+        local key, v = tostring(payload or ""):match("^%s*([%w%-]+)%s*=%s*(.-)%s*$")
+        if key then run("pref", { key = key, value = v }) end
+    else
+        run(event)
+    end
 end
 
 function onConfigChanged()
+    -- A setting edited in Noctalia's settings beats an older panel override.
+    local dropped = false
+    for key in pairs(SCHEMA) do
+        local now = noctalia.getConfig(key)
+        if now ~= seenConfig[key] then
+            seenConfig[key] = now
+            if prefs[key] ~= nil then
+                prefs[key] = nil
+                dropped = true
+            end
+        end
+    end
+    if dropped then writeJson(PREFS_PATH, prefs) end
+    local wasDefault = T.status == "idle" and T.totalMs == phaseLength(T.phase)
     loadConfig()
-    if T.status == "idle" then
+    if wasDefault then
         T.totalMs = phaseLength(T.phase)
         T.remainingMs = T.totalMs
     end
     if T.round > cfg.rounds then T.round = 1 end
     saveState()
+    publishConfig()
     publishStats()
     publishTimer(true)
 end
@@ -318,24 +462,23 @@ end
 noctalia.setUpdateInterval(250)
 function update()
     if T.status == "running" and remainingNow() <= 0 then
-        finish()
+        local finished = T.phase
+        T.remainingMs = 0
+        logFocus("complete")
+        alert(finished)
+        advance(true)
         saveState()
         publishTimer(true)
     else
         publishTimer(false)
     end
     -- Midnight rollover: today's numbers and the heatmap move on.
-    local day = Stats.dayKey(os.time())
-    if day ~= statsDay then
+    if Stats.dayKey(os.time()) ~= statsDay then
         publishStats()
         publishTimer(true)
     end
 end
 
--- A deadline that passed while the shell was down completes immediately.
+publishConfig()
 publishStats()
-if T.status == "running" and remainingNow() <= 0 then
-    finish()
-    saveState()
-end
 publishTimer(true)

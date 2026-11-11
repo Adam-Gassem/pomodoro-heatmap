@@ -1,14 +1,14 @@
-id           = "adam-gassem/focusflow"
-name         = "FocusFlow"
-version      = "0.1.0"
+id           = "adam-gassem/pomodoro-heatmap"
+name         = "Pomodoro Heatmap"
+version      = "0.2.0"
 plugin_api   = 43
 author       = "Adam-Gassem"
 license      = "MIT"
 icon         = "brain"
 description  = "Pomodoro timer for the bar with a focus heatmap, streaks and analytics."
-tags         = ["bar", "panel", "service", "productivity", "time"]
+tags         = ["bar", "panel", "service", "productivity", "time", "pomodoro", "statistics"]
 
-# ---------------------------------------------------------------- timer
+# ---------------------------------------------------------------- durations
 [[setting]]
 key             = "work-minutes"
 type            = "int"
@@ -45,12 +45,21 @@ default         = 4
 min             = 1
 max             = 12
 
+# ---------------------------------------------------------------- flow
+[[setting]]
+key             = "breaks-enabled"
+type            = "bool"
+label_key       = "settings.breaks-enabled.label"
+description_key = "settings.breaks-enabled.description"
+default         = true
+
 [[setting]]
 key             = "auto-start-breaks"
 type            = "bool"
 label_key       = "settings.auto-start-breaks.label"
 description_key = "settings.auto-start-breaks.description"
 default         = true
+visible_when    = { key = "breaks-enabled", values = ["true"] }
 
 [[setting]]
 key             = "auto-start-work"
@@ -86,19 +95,55 @@ description_key = "settings.notify.description"
 default         = true
 
 [[setting]]
-key             = "sound"
-type            = "bool"
-label_key       = "settings.sound.label"
-description_key = "settings.sound.description"
-default         = true
+key             = "focus-end-sound"
+type            = "select"
+label_key       = "settings.focus-end-sound.label"
+description_key = "settings.focus-end-sound.description"
+default         = "soft-chime"
+options         = [
+  { value = "soft-chime", label_key = "sounds.soft-chime" },
+  { value = "gentle-bell", label_key = "sounds.gentle-bell" },
+  { value = "wood", label_key = "sounds.wood" },
+  { value = "system-bell", label_key = "sounds.system-bell" },
+  { value = "system-message", label_key = "sounds.system-message" },
+  { value = "system-complete", label_key = "sounds.system-complete" },
+  { value = "custom", label_key = "sounds.custom" },
+  { value = "none", label_key = "sounds.none" },
+]
 
 [[setting]]
-key             = "sound-file"
+key             = "break-end-sound"
+type            = "select"
+label_key       = "settings.break-end-sound.label"
+description_key = "settings.break-end-sound.description"
+default         = "wood"
+options         = [
+  { value = "soft-chime", label_key = "sounds.soft-chime" },
+  { value = "gentle-bell", label_key = "sounds.gentle-bell" },
+  { value = "wood", label_key = "sounds.wood" },
+  { value = "system-bell", label_key = "sounds.system-bell" },
+  { value = "system-message", label_key = "sounds.system-message" },
+  { value = "system-complete", label_key = "sounds.system-complete" },
+  { value = "custom", label_key = "sounds.custom" },
+  { value = "none", label_key = "sounds.none" },
+]
+
+[[setting]]
+key             = "sound-volume"
+type            = "int"
+label_key       = "settings.sound-volume.label"
+description_key = "settings.sound-volume.description"
+default         = 60
+min             = 0
+max             = 100
+step            = 5
+
+[[setting]]
+key             = "custom-sound-file"
 type            = "string"
-label_key       = "settings.sound-file.label"
-description_key = "settings.sound-file.description"
-default         = "/usr/share/sounds/freedesktop/stereo/complete.oga"
-visible_when    = { key = "sound", values = ["true"] }
+label_key       = "settings.custom-sound-file.label"
+description_key = "settings.custom-sound-file.description"
+default         = ""
 
 # ---------------------------------------------------------------- entries
 [[service]]
@@ -130,4 +175,4 @@ placement       = "attached"
 position        = "auto"
 open_near_click = true
 width           = 432
-height          = 620
+height          = 640
