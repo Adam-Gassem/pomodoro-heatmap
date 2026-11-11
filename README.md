@@ -141,12 +141,12 @@ noctalia msg plugin adam-gassem/pomodoro-heatmap:engine all <event> [payload]
 | `length` | minutes | Set the length of the next stage before it starts, e.g. `length 50`. |
 | `set` | `key=value` | Change a setting, e.g. `set work-minutes=50` or `set breaks-enabled=false`. |
 
-Example Hyprland binds:
+Example Hyprland binds (`SUPER + P` is often taken by a colour picker, so these use `O`):
 
 ```ini
-bind = SUPER, P, exec, noctalia msg plugin adam-gassem/pomodoro-heatmap:engine all toggle
-bind = SUPER ALT, P, exec, noctalia msg plugin adam-gassem/pomodoro-heatmap:engine all finish
-bind = SUPER SHIFT, P, exec, noctalia msg panel-toggle adam-gassem/pomodoro-heatmap:panel insights
+bind = SUPER, O, exec, noctalia msg plugin adam-gassem/pomodoro-heatmap:engine all toggle
+bind = SUPER ALT, O, exec, noctalia msg plugin adam-gassem/pomodoro-heatmap:engine all finish
+bind = SUPER SHIFT, O, exec, noctalia msg panel-toggle adam-gassem/pomodoro-heatmap:panel insights
 ```
 
 ## Notes
