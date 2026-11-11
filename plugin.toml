@@ -1,12 +1,13 @@
 id           = "adam-gassem/pomodoro-heatmap"
 name         = "Pomodoro Heatmap"
-version      = "0.2.0"
+version      = "0.3.0"
 plugin_api   = 43
 author       = "Adam-Gassem"
 license      = "MIT"
 icon         = "brain"
 description  = "Pomodoro timer for the bar with a focus heatmap, streaks and analytics."
-tags         = ["bar", "panel", "service", "productivity", "time", "pomodoro", "statistics"]
+tags         = ["bar", "panel", "service", "productivity", "time", "countdown"]
+dependencies = ["pw-play"]
 
 # ---------------------------------------------------------------- durations
 [[setting]]
