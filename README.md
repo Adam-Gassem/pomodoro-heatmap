@@ -52,8 +52,7 @@ Other Pomodoro plugins only run the timer. This one adds:
 ## Installation
 
 ```sh
-git clone git@github.com:Adam-Gassem/pomodoro-heatmap.git ~/Projects/pomodoro-heatmap
-ln -s ~/Projects/pomodoro-heatmap ~/.local/share/noctalia/plugins/pomodoro-heatmap
+git clone https://github.com/Adam-Gassem/pomodoro-heatmap.git ~/.local/share/noctalia/plugins/pomodoro-heatmap
 noctalia msg plugins enable adam-gassem/pomodoro-heatmap
 ```
 
