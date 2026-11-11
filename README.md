@@ -19,6 +19,7 @@ Other Pomodoro plugins only run the timer. This one adds:
   it shows today's finished sessions.
 - **Timer**:
   - Before starting, set the length with − / +, preset chips (15 · 25 · 45 · 60 · 90),
+    by clicking the clock and typing minutes,
     or by scrolling on the bar. Keep it for this session only, or save it as your default.
   - While running: pause or resume, ±1 minute, **Finish** (end now and count the time
     as a completed session), **Skip**, **Restart** and **Stop**.
@@ -29,7 +30,8 @@ Other Pomodoro plugins only run the timer. This one adds:
   - a 14-day trend
   - time-of-day and weekday charts
   - your best day and completion rate
-- **Settings tab**: durations, rounds, daily goal, break options, sounds with
+- **Settings tab**: durations, rounds and daily goal (step with − / + or type a
+  value and press Enter), break options, sounds with
   preview, and volume, all without leaving the panel.
 - **Reliable timer**: deadlines follow the real clock, so the timer stays correct
   through suspend and lag. A running session resumes after the shell restarts.

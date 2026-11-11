@@ -31,9 +31,36 @@ local function send(cmd, arg)
     noctalia.state.set("pomo.cmd", { cmd = cmd, arg = arg, n = nonce .. ":" .. noctalia.nowMs() })
 end
 
-local function setPref(key, value)
-    send("pref", { key = key, value = value })
+-- Optimistic local values: the panel shows a change immediately and keeps
+-- showing it until the engine echoes the same value back, so rapid clicks
+-- accumulate instead of snapping back to a stale value.
+local localPrefs = {}     -- pref key -> value
+local localLength = nil   -- { phase = ..., minutes = ... } for the idle timer
+local editingClock = false
+local clockDraft = nil
+local drafts = {}         -- pref key -> text being typed
+
+local FIELD = {
+    ["work-minutes"] = "work", ["short-break-minutes"] = "short", ["long-break-minutes"] = "long",
+    ["rounds"] = "rounds", ["daily-goal-minutes"] = "goal", ["sound-volume"] = "volume",
+    ["breaks-enabled"] = "breaks", ["auto-start-breaks"] = "autoBreaks", ["auto-start-work"] = "autoWork",
+    ["notify"] = "notify", ["focus-end-sound"] = "focusSound", ["break-end-sound"] = "breakSound",
+}
+
+local function prefValue(c, key)
+    if localPrefs[key] ~= nil then return localPrefs[key] end
+    return c[FIELD[key]]
 end
+
+local function setPref(key, value)
+    localPrefs[key] = value
+    send("pref", { key = key, value = value })
+    render()
+end
+
+-- Next/previous multiple of step, so 23 goes to 25 / 20 rather than 28 / 18.
+local function stepUp(v, step) return (math.floor(v / step) + 1) * step end
+local function stepDown(v, step) return (math.ceil(v / step) - 1) * step end
 
 -- ------------------------------------------------------------------ helpers
 
@@ -89,6 +116,8 @@ local function tabButton(id, text, glyph)
         height = 30,
         onClick = function()
             if tab ~= id then
+                commitAllDrafts()
+                editingClock, clockDraft = false, nil
                 tab = id
                 if id == "insights" then send("refresh-stats") end
                 render()
@@ -124,19 +153,36 @@ local function roundDots(t)
     return ui.row({ gap = 6, align = "center", justify = "center" }, dots)
 end
 
--- Idle: the length can be changed before starting (±, presets, save as default).
+local function idleMinutes(t)
+    if localLength and localLength.phase == t.phase then return localLength.minutes end
+    return math.floor(t.total / 60)
+end
+
+local function setLength(t, minutes)
+    minutes = math.clamp(math.floor(minutes), 1, 600)
+    localLength = { phase = t.phase, minutes = minutes }
+    send("length", minutes)
+    render()
+end
+
+local function commitClockDraft(t)
+    local n = tonumber(clockDraft or "")
+    editingClock, clockDraft = false, nil
+    if n and n >= 1 then setLength(t, n) else render() end
+end
+
+-- Idle: the length can be changed before starting (±, presets, typing, save as default).
 local function lengthPicker(t)
-    local minutes = math.floor(t.total / 60)
-    local step = minutes > 5 and 5 or 1
+    local minutes = idleMinutes(t)
     local chips = {}
     for _, m in ipairs(PRESETS[t.phase] or PRESETS.work) do
         table.insert(chips, ui.button({
             text = tostring(m), variant = m == minutes and "secondary" or "ghost",
-            height = 26, flexGrow = 1, onClick = function() send("length", m) end,
+            height = 26, flexGrow = 1, onClick = function() setLength(t, m) end,
         }))
     end
     local rows = { ui.row({ gap = 4 }, chips) }
-    if t.total ~= t.defaultTotal then
+    if minutes * 60 ~= t.defaultTotal then
         local key = t.phase == "work" and "work-minutes" or (t.phase == "short" and "short-break-minutes" or "long-break-minutes")
         table.insert(rows, ui.row({ gap = 6, align = "center", justify = "center" }, {
             muted(string.format("Default is %s", duration(t.defaultTotal / 60)), 11),
@@ -144,7 +190,23 @@ local function lengthPicker(t)
                 onClick = function() setPref(key, minutes) end }),
         }))
     end
-    return ui.column({ gap = 6 }, rows), step, minutes
+    return ui.column({ gap = 6 }, rows), minutes
+end
+
+local function clockEditor(t, minutes)
+    return ui.row({ gap = 8, align = "center", justify = "center", height = 70 }, {
+        ui.input({
+            key = "clock-input", value = clockDraft or tostring(minutes), width = 96, controlSize = "lg",
+            focus = true, placeholder = "min",
+            onChange = function(text) clockDraft = tostring(text or "") end,
+            onSubmit = function() commitClockDraft(t) end,
+        }),
+        muted("min", 14),
+        ui.button({ glyph = "check", variant = "primary", width = 36, height = 36,
+            onClick = function() commitClockDraft(t) end }),
+        ui.button({ glyph = "x", variant = "ghost", width = 36, height = 36,
+            onClick = function() editingClock, clockDraft = false, nil; render() end }),
+    })
 end
 
 local function timerHero(t)
@@ -179,14 +241,35 @@ local function timerHero(t)
         table.insert(children, ui.progress({ progress = progress, height = 6, radius = 3, fill = accent,
             track = "on_surface/0.1" }))
     else
-        local picker, step, minutes = lengthPicker(t)
-        table.insert(children, ui.row({ align = "center", gap = 8 }, {
-            ui.button({ glyph = "minus", variant = "ghost", width = 40, height = 40, enabled = minutes > 1,
-                onClick = function() send("length", math.max(1, minutes - step)) end }),
-            ui.column({ flexGrow = 1, align = "center" }, { clockLabel }),
-            ui.button({ glyph = "plus", variant = "ghost", width = 40, height = 40,
-                onClick = function() send("length", minutes + step) end }),
-        }))
+        local picker, minutes = lengthPicker(t)
+        if editingClock then
+            table.insert(children, clockEditor(t, minutes))
+        else
+            table.insert(children, ui.row({ align = "center", gap = 8 }, {
+                ui.button({ glyph = "minus", variant = "ghost", width = 40, height = 40, enabled = minutes > 1,
+                    onClick = function()
+                        local m = idleMinutes(t)
+                        setLength(t, m > 5 and stepDown(m, 5) or m - 1)
+                    end }),
+                ui.column({ flexGrow = 1, align = "center", justify = "center", height = 70,
+                    tooltip = "Click to type a length",
+                    onClick = function() editingClock, clockDraft = true, nil; render() end }, {
+                    ui.label({
+                        text = clock(minutes * 60),
+                        fontSize = minutes >= 60 and 48 or 58,
+                        fontWeight = "bold",
+                        fontFamily = "monospace",
+                        color = "on_surface",
+                        textAlign = "center",
+                    }),
+                }),
+                ui.button({ glyph = "plus", variant = "ghost", width = 40, height = 40, enabled = minutes < 600,
+                    onClick = function()
+                        local m = idleMinutes(t)
+                        setLength(t, m >= 5 and stepUp(m, 5) or m + 1)
+                    end }),
+            }))
+        end
         table.insert(children, picker)
     end
     table.insert(children, roundDots(t))
@@ -206,7 +289,14 @@ local function controls(t)
 
     if not active then
         local row1 = { ui.button({ text = p.start, glyph = "player-play", variant = "primary", height = 44,
-            flexGrow = 1, onClick = function() send("start") end }) }
+            flexGrow = 1, onClick = function()
+                if editingClock then
+                    local n = tonumber(clockDraft or "")
+                    if n and n >= 1 then localLength = { phase = t.phase, minutes = math.clamp(math.floor(n), 1, 600) } end
+                    editingClock, clockDraft = false, nil
+                end
+                send("start", localLength and localLength.phase == t.phase and localLength.minutes or nil)
+            end }) }
         if not isWork then
             table.insert(row1, ui.button({ text = "Skip break", glyph = "player-track-next", variant = "outline",
                 height = 44, flexGrow = 1, onClick = function() send("skip") end }))
@@ -303,31 +393,66 @@ end
 
 -- ------------------------------------------------------------------ settings tab
 
-local function stepper(label, hint, value, unit, step, min, max, key)
-    return ui.row({ gap = 8, align = "center" }, {
+local STEPPERS = {
+    ["work-minutes"] = { min = 1, max = 180, step = 5 },
+    ["short-break-minutes"] = { min = 1, max = 60, step = 1 },
+    ["long-break-minutes"] = { min = 1, max = 120, step = 5 },
+    ["rounds"] = { min = 1, max = 12, step = 1 },
+    ["daily-goal-minutes"] = { min = 0, max = 960, step = 15 },
+}
+
+-- Apply a typed value (Enter, tab switch or panel close).
+local function commitDraft(key)
+    local text = drafts[key]
+    drafts[key] = nil
+    local spec = STEPPERS[key]
+    local n = tonumber(text or "")
+    if spec and n then setPref(key, math.clamp(math.floor(n), spec.min, spec.max)) end
+end
+
+function commitAllDrafts()
+    for key in pairs(drafts) do commitDraft(key) end
+end
+
+local function stepper(c, label, hint, key, unit)
+    local spec = STEPPERS[key]
+    local value = prefValue(c, key)
+    return ui.row({ gap = 6, align = "center" }, {
         ui.column({ flexGrow = 1, gap = 1 }, {
             ui.label({ text = label, fontSize = 13, color = "on_surface" }),
             hint and muted(hint, 10) or nil,
         }),
-        ui.button({ glyph = "minus", variant = "ghost", width = 30, height = 30, enabled = value > min,
-            onClick = function() setPref(key, math.max(min, value - step)) end }),
-        ui.column({ width = 58, align = "center" }, {
-            ui.label({ text = unit == "min" and duration(value) or tostring(value), fontSize = 13,
-                fontWeight = "bold", color = "on_surface" }),
+        ui.button({ glyph = "minus", variant = "ghost", width = 30, height = 30, enabled = value > spec.min,
+            onClick = function()
+                drafts[key] = nil
+                local v = prefValue(c, key)
+                setPref(key, math.max(spec.min, stepDown(v, spec.step)))
+            end }),
+        ui.input({
+            key = "input-" .. key, value = drafts[key] or tostring(value), width = 56, controlSize = "sm",
+            tooltip = string.format("Type a value (%d–%d) and press Enter", spec.min, spec.max),
+            onChange = function(text) drafts[key] = tostring(text or "") end,
+            onSubmit = function() commitDraft(key) end,
         }),
-        ui.button({ glyph = "plus", variant = "ghost", width = 30, height = 30, enabled = value < max,
-            onClick = function() setPref(key, math.min(max, value + step)) end }),
+        ui.column({ width = 26 }, { muted(unit, 11) }),
+        ui.button({ glyph = "plus", variant = "ghost", width = 30, height = 30, enabled = value < spec.max,
+            onClick = function()
+                drafts[key] = nil
+                local v = prefValue(c, key)
+                setPref(key, math.min(spec.max, stepUp(v, spec.step)))
+            end }),
     })
 end
 
-local function toggleRow(label, hint, checked, key, enabled)
+local function toggleRow(c, label, hint, key, enabled)
+    local checked = prefValue(c, key) == true
     return ui.row({ gap = 8, align = "center" }, {
         ui.column({ flexGrow = 1, gap = 1 }, {
             ui.label({ text = label, fontSize = 13, color = enabled == false and "on_surface_variant" or "on_surface" }),
             hint and muted(hint, 10) or nil,
         }),
         ui.toggle({ checked = checked, enabled = enabled ~= false,
-            onChange = function() setPref(key, not checked) end }),
+            onChange = function() setPref(key, not (prefValue(c, key) == true)) end }),
     })
 end
 
@@ -336,7 +461,8 @@ local function indexOf(list, v)
     return 0
 end
 
-local function soundRow(label, current, key)
+local function soundRow(c, label, key)
+    local current = prefValue(c, key)
     return ui.column({ gap = 6 }, {
         ui.label({ text = label, fontSize = 13, color = "on_surface" }),
         ui.row({ gap = 6, align = "center" }, {
@@ -344,55 +470,56 @@ local function soundRow(label, current, key)
                 ui.select({ options = SOUND_LABELS, selectedIndex = indexOf(SOUND_IDS, current), controlSize = "md",
                     onChange = function(index)
                         local id = SOUND_IDS[(math.floor(tonumber(index) or 0)) + 1]
-                        if id and id ~= current then
+                        if id and id ~= prefValue(c, key) then
                             setPref(key, id)
                             send("preview", id)
                         end
                     end }),
             }),
             ui.button({ glyph = "player-play", variant = "outline", width = 36, height = 34,
-                enabled = current ~= "none", onClick = function() send("preview", current) end }),
+                enabled = current ~= "none", onClick = function() send("preview", prefValue(c, key)) end }),
         }),
     })
 end
 
-local lastVolume = nil
 local function settingsTab(c)
     if not c then
         return ui.column({ flexGrow = 1, align = "center", justify = "center" }, { muted("Loading…", 13) })
     end
-    lastVolume = c.volume
+    local volume = prefValue(c, "sound-volume")
+    local breaks = prefValue(c, "breaks-enabled")
     return ui.scroll({ key = "settings-scroll", flexGrow = 1, gap = 12 }, {
         card({}, {
-            sectionTitle("hourglass", "Durations"),
-            stepper("Focus", nil, c.work, "min", 5, 5, 180, "work-minutes"),
-            stepper("Short break", nil, c.short, "min", 1, 1, 60, "short-break-minutes"),
-            stepper("Long break", nil, c.long, "min", 5, 5, 120, "long-break-minutes"),
-            stepper("Rounds", "Focus sessions before the long break", c.rounds, "", 1, 1, 12, "rounds"),
-            stepper("Daily goal", "Full colour on the heatmap", c.goal, "min", 15, 0, 960, "daily-goal-minutes"),
+            sectionTitle("hourglass", "Durations", "type a value + Enter"),
+            stepper(c, "Focus", nil, "work-minutes", "min"),
+            stepper(c, "Short break", nil, "short-break-minutes", "min"),
+            stepper(c, "Long break", nil, "long-break-minutes", "min"),
+            stepper(c, "Rounds", "Focus sessions before the long break", "rounds", ""),
+            stepper(c, "Daily goal", "Full colour on the heatmap", "daily-goal-minutes", "min"),
         }),
         card({}, {
             sectionTitle("adjustments-horizontal", "Flow"),
-            toggleRow("Breaks", "Off: go straight to the next focus session", c.breaks, "breaks-enabled"),
-            toggleRow("Auto-start breaks", nil, c.autoBreaks, "auto-start-breaks", c.breaks),
-            toggleRow("Auto-start focus", "After a break ends", c.autoWork, "auto-start-work"),
-            toggleRow("Notifications", nil, c.notify, "notify"),
+            toggleRow(c, "Breaks", "Off: go straight to the next focus session", "breaks-enabled"),
+            toggleRow(c, "Auto-start breaks", nil, "auto-start-breaks", breaks),
+            toggleRow(c, "Auto-start focus", "After a break ends", "auto-start-work"),
+            toggleRow(c, "Notifications", nil, "notify"),
         }),
         card({}, {
             sectionTitle("volume", "Sound"),
-            soundRow("When focus ends", c.focusSound, "focus-end-sound"),
-            soundRow("When a break ends", c.breakSound, "break-end-sound"),
+            soundRow(c, "When focus ends", "focus-end-sound"),
+            soundRow(c, "When a break ends", "break-end-sound"),
             ui.row({ gap = 10, align = "center" }, {
                 ui.label({ text = "Volume", fontSize = 13, color = "on_surface" }),
-                ui.slider({ key = "pomo-volume", min = 0, max = 100, step = 5, value = c.volume, flexGrow = 1,
+                ui.slider({ key = "pomo-volume", min = 0, max = 100, step = 5, value = volume, flexGrow = 1,
                     onChange = function(v)
-                        local n = math.floor(tonumber(v) or c.volume)
-                        if n ~= lastVolume then
-                            lastVolume = n
-                            setPref("sound-volume", n)
+                        local n = math.floor(tonumber(v) or volume)
+                        if n ~= prefValue(c, "sound-volume") then
+                            -- No re-render mid-drag; the label catches up on the engine's echo.
+                            localPrefs["sound-volume"] = n
+                            send("pref", { key = "sound-volume", value = n })
                         end
                     end }),
-                ui.column({ width = 40, align = "end" }, { muted(string.format("%d%%", c.volume), 12) }),
+                ui.column({ width = 40, align = "end" }, { muted(string.format("%d%%", volume), 12) }),
             }),
         }),
         ui.button({ text = "All settings", glyph = "settings", variant = "ghost", height = 32,
@@ -632,19 +759,39 @@ function onOpen(context)
 end
 
 function onClose()
+    commitAllDrafts()
+    editingClock, clockDraft = false, nil
     isOpen = false
 end
 
-noctalia.state.watch("pomo.timer", function()
+-- Drop optimistic values once the engine has caught up with them.
+local function reconcileTimer(t)
+    if localLength and (not t or t.status ~= "idle" or t.phase ~= localLength.phase
+        or math.floor(t.total / 60) == localLength.minutes) then
+        localLength = nil
+    end
+end
+
+local function reconcileConfig(c)
+    if not c then return end
+    for key, v in pairs(localPrefs) do
+        if c[FIELD[key]] == v then localPrefs[key] = nil end
+    end
+end
+
+noctalia.state.watch("pomo.timer", function(t)
+    reconcileTimer(t)
     -- Only the timer tab shows the ticking clock; skip per-second redraws elsewhere.
-    if isOpen and tab == "timer" then render() end
+    -- While a length is being typed, don't redraw under the cursor.
+    if isOpen and tab == "timer" and not editingClock then render() end
 end)
 
 noctalia.state.watch("pomo.stats", function()
     if isOpen and tab ~= "settings" then render() end
 end)
 
-noctalia.state.watch("pomo.config", function()
+noctalia.state.watch("pomo.config", function(c)
+    reconcileConfig(c)
     if isOpen and tab == "settings" then render() end
 end)
 

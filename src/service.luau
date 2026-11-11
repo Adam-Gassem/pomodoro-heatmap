@@ -307,8 +307,9 @@ end
 
 local actions = {}
 
-function actions.start()
+function actions.start(minutes) -- optional length, applied if the stage hasn't started yet
     if T.status == "running" then return end
+    if minutes ~= nil then actions.length(minutes) end
     if not T.startedAt then T.startedAt = os.time() end
     T.endsAt = noctalia.nowMs() + T.remainingMs
     T.status = "running"
