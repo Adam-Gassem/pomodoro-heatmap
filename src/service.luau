@@ -394,6 +394,27 @@ function actions.preview(id)
     playSound(id)
 end
 
+-- Battery: only wake when something visible can change. While running, tick right
+-- after the displayed second flips; otherwise sleep until local midnight (capped at an
+-- hour, so a suspend or clock change is noticed soon enough).
+local currentInterval = 0
+local function schedule()
+    local ms
+    if T.status == "running" and T.endsAt then
+        local rem = math.max(0, T.endsAt - noctalia.nowMs())
+        ms = rem % 1000 + 20
+    else
+        local t = os.date("*t")
+        local untilMidnight = ((23 - t.hour) * 3600 + (59 - t.min) * 60 + (60 - t.sec)) * 1000
+        ms = math.min(untilMidnight + 1000, 3600000)
+    end
+    ms = math.max(50, math.floor(ms))
+    if ms ~= currentInterval then
+        currentInterval = ms
+        noctalia.setUpdateInterval(ms)
+    end
+end
+
 local ALIASES = {
     plus = function() actions.adjust(60) end,
     minus = function() actions.adjust(-60) end,
@@ -413,6 +434,7 @@ local function run(cmd, arg)
     end
     saveState()
     publishTimer(true)
+    schedule()
 end
 
 -- ------------------------------------------------------------------ wiring
@@ -458,9 +480,9 @@ function onConfigChanged()
     publishConfig()
     publishStats()
     publishTimer(true)
+    schedule()
 end
 
-noctalia.setUpdateInterval(250)
 function update()
     if T.status == "running" and remainingNow() <= 0 then
         local finished = T.phase
@@ -478,8 +500,10 @@ function update()
         publishStats()
         publishTimer(true)
     end
+    schedule()
 end
 
 publishConfig()
 publishStats()
 publishTimer(true)
+schedule()
