@@ -6,6 +6,8 @@ charts showing when you focus best.
 
 ![Pomodoro Heatmap on the bar](docs/bar.png)
 
+![Timer, Insights and Settings tabs](docs/panel.png)
+
 Other Pomodoro plugins only run the timer. This one adds:
 
 - **Focus history**: a 26-week heatmap, streaks, trends, and time-of-day and weekday charts.
