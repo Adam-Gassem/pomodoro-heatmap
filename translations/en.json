@@ -1,0 +1,19 @@
+{
+  "settings": {
+    "work-minutes": { "label": "Focus length", "description": "Minutes per focus session." },
+    "short-break-minutes": { "label": "Short break", "description": "Minutes per short break." },
+    "long-break-minutes": { "label": "Long break", "description": "Minutes per long break." },
+    "rounds": { "label": "Rounds before long break", "description": "Focus sessions in one cycle before a long break." },
+    "auto-start-breaks": { "label": "Auto-start breaks", "description": "Start the break as soon as a focus session ends." },
+    "auto-start-work": { "label": "Auto-start focus", "description": "Start the next focus session as soon as a break ends." },
+    "daily-goal-minutes": { "label": "Daily goal (minutes)", "description": "Focus minutes per day you aim for. Set 0 to hide the goal." },
+    "log-partial": { "label": "Log interrupted sessions", "description": "Count focus time from sessions you skip or reset (one minute or more)." },
+    "notify": { "label": "Notifications", "description": "Show a notification when a session or break ends." },
+    "sound": { "label": "Sound", "description": "Play a sound when a session or break ends." },
+    "sound-file": { "label": "Sound file", "description": "Audio file played with pw-play." },
+    "widget": {
+      "show-idle-count": { "label": "Show today's count when idle", "description": "Show how many sessions you finished today while the timer is idle." },
+      "show-progress": { "label": "Show progress line", "description": "Show a thin progress line under the countdown." }
+    }
+  }
+}

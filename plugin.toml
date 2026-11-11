@@ -1,0 +1,133 @@
+id           = "adam-gassem/focusflow"
+name         = "FocusFlow"
+version      = "0.1.0"
+plugin_api   = 43
+author       = "Adam-Gassem"
+license      = "MIT"
+icon         = "brain"
+description  = "Pomodoro timer for the bar with a focus heatmap, streaks and analytics."
+tags         = ["bar", "panel", "service", "productivity", "time"]
+
+# ---------------------------------------------------------------- timer
+[[setting]]
+key             = "work-minutes"
+type            = "int"
+label_key       = "settings.work-minutes.label"
+description_key = "settings.work-minutes.description"
+default         = 25
+min             = 1
+max             = 180
+
+[[setting]]
+key             = "short-break-minutes"
+type            = "int"
+label_key       = "settings.short-break-minutes.label"
+description_key = "settings.short-break-minutes.description"
+default         = 5
+min             = 1
+max             = 60
+
+[[setting]]
+key             = "long-break-minutes"
+type            = "int"
+label_key       = "settings.long-break-minutes.label"
+description_key = "settings.long-break-minutes.description"
+default         = 15
+min             = 1
+max             = 120
+
+[[setting]]
+key             = "rounds"
+type            = "int"
+label_key       = "settings.rounds.label"
+description_key = "settings.rounds.description"
+default         = 4
+min             = 1
+max             = 12
+
+[[setting]]
+key             = "auto-start-breaks"
+type            = "bool"
+label_key       = "settings.auto-start-breaks.label"
+description_key = "settings.auto-start-breaks.description"
+default         = true
+
+[[setting]]
+key             = "auto-start-work"
+type            = "bool"
+label_key       = "settings.auto-start-work.label"
+description_key = "settings.auto-start-work.description"
+default         = false
+
+# ---------------------------------------------------------------- goals & logging
+[[setting]]
+key             = "daily-goal-minutes"
+type            = "int"
+label_key       = "settings.daily-goal-minutes.label"
+description_key = "settings.daily-goal-minutes.description"
+default         = 120
+min             = 0
+max             = 960
+step            = 15
+
+[[setting]]
+key             = "log-partial"
+type            = "bool"
+label_key       = "settings.log-partial.label"
+description_key = "settings.log-partial.description"
+default         = true
+
+# ---------------------------------------------------------------- alerts
+[[setting]]
+key             = "notify"
+type            = "bool"
+label_key       = "settings.notify.label"
+description_key = "settings.notify.description"
+default         = true
+
+[[setting]]
+key             = "sound"
+type            = "bool"
+label_key       = "settings.sound.label"
+description_key = "settings.sound.description"
+default         = true
+
+[[setting]]
+key             = "sound-file"
+type            = "string"
+label_key       = "settings.sound-file.label"
+description_key = "settings.sound-file.description"
+default         = "/usr/share/sounds/freedesktop/stereo/complete.oga"
+visible_when    = { key = "sound", values = ["true"] }
+
+# ---------------------------------------------------------------- entries
+[[service]]
+id    = "engine"
+entry = "src/service.luau"
+
+[[widget]]
+id    = "widget"
+entry = "src/widget.luau"
+
+    [[widget.setting]]
+    key             = "show-idle-count"
+    type            = "bool"
+    label_key       = "settings.widget.show-idle-count.label"
+    description_key = "settings.widget.show-idle-count.description"
+    default         = true
+
+    [[widget.setting]]
+    key             = "show-progress"
+    type            = "bool"
+    label_key       = "settings.widget.show-progress.label"
+    description_key = "settings.widget.show-progress.description"
+    default         = true
+
+[[panel]]
+id              = "panel"
+entry           = "src/panel.luau"
+placement       = "attached"
+position        = "auto"
+open_near_click = true
+width           = 432
+height          = 620
